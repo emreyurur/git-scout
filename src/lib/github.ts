@@ -1,5 +1,6 @@
 
 import { Octokit } from "octokit";
+import { unstable_cache } from "next/cache";
 
 export interface Repository {
     id: number;
@@ -46,67 +47,69 @@ function transformRepo(repo: any): Repository {
 
 export type SortOption = 'stars' | 'updated' | 'forks' | 'created' | 'help-wanted-issues';
 
-// 1. Get Global Trending Repositories (Home Page)
-export async function getGlobalTrendingRepos(
-    sort: SortOption = 'stars',
-    category: string = 'All'
-): Promise<Repository[]> {
+// Helper for Timeout
+const timeoutPromise = (ms: number) => {
+    return new Promise((_, reject) => {
+        setTimeout(() => {
+            reject(new Error("GitHub API is experiencing high latency."));
+        }, ms);
+    });
+};
+
+// Internal fetcher to be wrapped by cache and timeout
+async function fetchGlobalTrending(sort: SortOption, category: string): Promise<Repository[]> {
     const octokit = new Octokit({
         auth: process.env.GITHUB_TOKEN,
     });
 
     console.log(`[GitHub API] Fetching trending. Category: ${category}, Sort: ${sort}`);
 
-    // Server-Side Filtering (if specific category requested via props/url)
+    // Server-Side Filtering
     if (category !== 'All' && category !== 'All Trending') {
-        try {
-            // Simplified Queries without complex OR logic to avoid API parsing errors
-            const queryMap: Record<string, string> = {
-                'AI & ML': 'topic:machine-learning',
-                'Blockchain': 'topic:solidity',
-                'Frontend': 'language:typescript',
-                'Backend': 'language:go',
-            };
-            const topicQuery = queryMap[category] || 'stars:>1000';
-            const q = `stars:>1000 ${topicQuery}`;
+        const queryMap: Record<string, string> = {
+            'AI & ML': 'topic:machine-learning',
+            'Blockchain': 'topic:solidity',
+            'Frontend': 'language:typescript',
+            'Backend': 'language:go',
+        };
+        const topicQuery = queryMap[category] || 'stars:>1000';
+        const q = `stars:>1000 ${topicQuery}`;
 
-            console.log(`[GitHub API] Sending Specific Query: ${q}`);
-            const response = await octokit.rest.search.repos({
+        console.log(`[GitHub API] Sending Specific Query: ${q}`);
+
+        // Wrap request in timeout race (increased to 15s)
+        const response: any = await Promise.race([
+            octokit.rest.search.repos({
                 q,
                 sort: sort === 'created' ? 'updated' : sort,
                 order: "desc",
                 per_page: 50,
-            });
-            console.log(`[GitHub API] Fetched specific: ${response.data.items.length} items`);
-            return response.data.items.map(transformRepo);
-        } catch (error: any) {
-            console.error(`[GitHub API Error] Specific category ${category}:`, error.message);
-            return [];
-        }
+            }),
+            timeoutPromise(15000)
+        ]);
+
+        console.log(`[GitHub API] Fetched specific: ${response.data.items.length} items`);
+        return response.data.items.map(transformRepo);
     }
 
     // Parallel Fetch Strategy for "All"
-    // Using simple, flat queries guaranteed to hit results.
     const queries = [
-        // Frontend: High star TS projects are almost always frontend/fullstack
         `stars:>5000 language:typescript`,
-        // Backend: Go is predominantly backend
         `stars:>5000 language:go`,
-        // Web3: Solidity topic is the most accurate indicator
         `stars:>500 topic:solidity`,
-        // AI: Machine Learning topic is the standard
         `stars:>1000 topic:machine-learning`
     ];
 
-    try {
-        const results = await Promise.all(
+
+    const results = await Promise.race([
+        Promise.all(
             queries.map(q => {
                 console.log(`[GitHub API] Sending Parallel Query: ${q}`);
                 return octokit.rest.search.repos({
                     q,
                     sort: 'stars',
                     order: 'desc',
-                    per_page: 25, // 25 * 4 = 100 items raw
+                    per_page: 25,
                 }).then(res => {
                     console.log(`[GitHub API] Success "${q}": ${res.data.items.length} items`);
                     return res.data.items;
@@ -115,34 +118,40 @@ export async function getGlobalTrendingRepos(
                     return [];
                 });
             })
-        );
+        ),
+        timeoutPromise(15000)
+    ]) as any[];
 
-        // Flatten results
-        const allRawRepos = results.flat();
-        console.log(`[GitHub API] Total raw items fetched: ${allRawRepos.length}`);
+    // Flatten results
+    const allRawRepos = results.flat();
+    console.log(`[GitHub API] Total raw items fetched: ${allRawRepos.length}`);
 
-        // Deduplicate by ID
-        const seenIds = new Set<number>();
-        const uniqueRepos: Repository[] = [];
+    // Deduplicate by ID
+    const seenIds = new Set<number>();
+    const uniqueRepos: Repository[] = [];
 
-        for (const repo of allRawRepos) {
-            if (!seenIds.has(repo.id)) {
-                seenIds.add(repo.id);
-                uniqueRepos.push(transformRepo(repo));
-            }
+    for (const repo of allRawRepos) {
+        if (!seenIds.has(repo.id)) {
+            seenIds.add(repo.id);
+            uniqueRepos.push(transformRepo(repo));
         }
-
-        // Final Sort by Stars to mix the categories naturally
-        uniqueRepos.sort((a, b) => b.stargazers_count - a.stargazers_count);
-        console.log(`[GitHub API] Final unique items count: ${uniqueRepos.length}`);
-
-        return uniqueRepos;
-
-    } catch (error: any) {
-        console.error("[GitHub API Critical Error]", error.message);
-        return [];
     }
+
+    // Final Sort by Stars
+    uniqueRepos.sort((a, b) => b.stargazers_count - a.stargazers_count);
+    console.log(`[GitHub API] Final unique items count: ${uniqueRepos.length}`);
+
+    return uniqueRepos;
 }
+
+// Cached version of the global trending fetch
+export const getGlobalTrendingRepos = unstable_cache(
+    async (sort: SortOption = 'stars', category: string = 'All') => {
+        return fetchGlobalTrending(sort, category);
+    },
+    ['global-trending-repos'],
+    { revalidate: 3600 }
+);
 
 // 2. Get Logged-in User's Repositories (My Projects)
 export async function getUserRepositories(accessToken?: string): Promise<Repository[]> {
