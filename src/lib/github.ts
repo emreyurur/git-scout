@@ -68,7 +68,7 @@ async function fetchGlobalTrending(sort: SortOption, category: string): Promise<
     if (category !== 'All' && category !== 'All Trending') {
         const queryMap: Record<string, string> = {
             'AI & ML': 'topic:machine-learning',
-            'Blockchain': 'topic:solidity',
+            'Blockchain': 'topic:blockchain',
             'Frontend': 'language:typescript',
             'Backend': 'language:go',
         };
@@ -93,11 +93,20 @@ async function fetchGlobalTrending(sort: SortOption, category: string): Promise<
     }
 
     // Parallel Fetch Strategy for "All"
+    // Diversified Web3 Queries + Lower Thresholds for Volume
     const queries = [
-        `stars:>5000 language:typescript`,
-        `stars:>5000 language:go`,
-        `stars:>500 topic:solidity`,
-        `stars:>1000 topic:machine-learning`
+        // Frontend (Volume) - Increased to 30
+        `stars:>2000 language:typescript`,
+        // Backend (Volume) - Increased to 30
+        `stars:>2000 language:go`,
+        // AI (Volume) - Increased to 30
+        `stars:>1000 topic:machine-learning`,
+        // Web3 Sub-Query A (EVM / Solidity) - Lowered to stars:>100
+        `topic:solidity stars:>100 sort:updated`,
+        // Web3 Sub-Query B (General Blockchain) - Lowered to stars:>100
+        `topic:blockchain stars:>100 sort:updated`,
+        // Web3 Sub-Query C (Smart Contracts / Alt L1s) - Lowered to stars:>50
+        `topic:smart-contracts stars:>50 sort:updated`
     ];
 
 
@@ -107,9 +116,10 @@ async function fetchGlobalTrending(sort: SortOption, category: string): Promise<
                 console.log(`[GitHub API] Sending Parallel Query: ${q}`);
                 return octokit.rest.search.repos({
                     q,
-                    sort: 'stars',
-                    order: 'desc',
-                    per_page: 25,
+                    // If 'sort:updated' is in q, it often overrides this, but we keep defaults safe
+                    sort: q.includes('sort:updated') ? 'updated' : 'stars',
+                    order: "desc",
+                    per_page: 30, // Increased Volume!
                 }).then(res => {
                     console.log(`[GitHub API] Success "${q}": ${res.data.items.length} items`);
                     return res.data.items;
@@ -137,7 +147,7 @@ async function fetchGlobalTrending(sort: SortOption, category: string): Promise<
         }
     }
 
-    // Final Sort by Stars
+    // Final Sort by Stars (User usually expects this on home page)
     uniqueRepos.sort((a, b) => b.stargazers_count - a.stargazers_count);
     console.log(`[GitHub API] Final unique items count: ${uniqueRepos.length}`);
 
@@ -149,7 +159,7 @@ export const getGlobalTrendingRepos = unstable_cache(
     async (sort: SortOption = 'stars', category: string = 'All') => {
         return fetchGlobalTrending(sort, category);
     },
-    ['global-trending-repos'],
+    ['global-trending-repos-v2'], // Cache bust key
     { revalidate: 3600 }
 );
 
