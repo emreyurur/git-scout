@@ -34,15 +34,6 @@ export default async function Header() {
         <header className="flex flex-col md:flex-row items-center justify-between mb-12 gap-6 bg-[#11121d]/80 backdrop-blur-xl p-4 rounded-2xl border border-white/5 sticky top-4 z-50 shadow-2xl shadow-black/20">
             <div className="flex items-center gap-6">
                 <Link href="/" className="flex items-center gap-3 group">
-                    <div className="relative w-8 h-8 mr-2">
-                        <Image
-                            src="/logo.png"
-                            alt="GitScout Logo"
-                            fill
-                            className="object-contain"
-                            priority
-                        />
-                    </div>
                     <div className="flex flex-col">
                         <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-white/70">
                             GitScout
